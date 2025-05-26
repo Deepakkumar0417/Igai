@@ -1,0 +1,8 @@
+Flask
+pymilvus
+sentence-transformers
+boto3
+requests
+flask_cors
+neo4j
+flask-socketio
