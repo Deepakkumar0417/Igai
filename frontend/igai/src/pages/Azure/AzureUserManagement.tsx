@@ -16,7 +16,13 @@ import {
   Tabs,
   Tab,
 } from '@mui/material';
-import { fetchAzureUsers, fetchAzureUserDetails, chatWithQAAI, chatWithActionAI, handleAddRemoveWithAzureService } from '../../service/apiService';
+import {
+  fetchAzureUsers,
+  fetchAzureUserDetails,
+  chatWithQAAI,
+  chatWithActionAI,
+  handleAddRemoveWithAzureService,
+} from '../../service/apiService';
 import PersonIcon from '@mui/icons-material/Person';
 import GroupIcon from '@mui/icons-material/Group';
 import EventIcon from '@mui/icons-material/Event';
@@ -24,7 +30,7 @@ import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import { UserData } from '../../data/types';
-import { marked } from "marked";
+import { marked } from 'marked';
 
 const AzureUserManagement: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -43,19 +49,19 @@ const AzureUserManagement: React.FC = () => {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
 
-  // Simple function to display AI responses word-by-word
+  // Displays AI response word-by-word
   const delayPara = async (response: string, updateAIMessage: (updatedMessage: string) => void) => {
-    const words = response.split(" ");
-    let currentMessage = "";
+    const words = response.split(' ');
+    let currentMessage = '';
     words.forEach((word, index) => {
       setTimeout(() => {
-        currentMessage += word + " ";
+        currentMessage += word + ' ';
         updateAIMessage(currentMessage.trim());
       }, 75 * index);
     });
   };
 
-  // Use marked to parse Markdown responses from backend
+  // Parses Markdown responses
   const Markdown = async (markdownData: string): Promise<string> => {
     return marked.parse(markdownData);
   };
@@ -85,32 +91,48 @@ const AzureUserManagement: React.FC = () => {
     loadData();
   }, []);
 
-  // Calculate count of events with AccessDenied error
+  // Count events with AccessDenied error
   const calculateAccessDeniedCount = (events: any[]) => {
     if (!events || events.length === 0) return 0;
     return events.filter((event) => event.errorCode === 'AccessDenied').length;
   };
 
-  // Render status icons based on user events
+  // Render compliance status icon
   const renderCompilationStatus = (events: any[]) => {
     const accessDeniedCount = calculateAccessDeniedCount(events);
     if (accessDeniedCount === 0) {
       return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'green' }}>
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'green',
+          }}
+        >
           <CheckCircleIcon sx={{ fontSize: 40, color: 'green' }} />
           <Typography variant="caption">No Compliance</Typography>
         </Box>
       );
     }
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'red' }}>
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'red',
+        }}
+      >
         <ErrorIcon sx={{ fontSize: 40, color: 'red' }} />
         <Typography variant="h6">{accessDeniedCount} Compliance</Typography>
       </Box>
     );
   };
 
-  // Fetch user details when a user is selected
+  // Fetch user details when selected
   const fetchDetails = async (user: UserData) => {
     setSelectedUser(user);
     setLoadingDetails(true);
@@ -125,49 +147,50 @@ const AzureUserManagement: React.FC = () => {
     }
   };
 
-  // Chat query functions: onQASent and onActionSent use the backend endpoints directly
+  // QA Chat (read-only)
   const onQASent = async (model?: string, session?: string): Promise<void> => {
     if (chatLoading) return;
-    const session_id = session ? session : "session";
-    const model_name = model ? model : "gpt4";
+    const session_id = session ? session : 'session';
+    const model_name = model ? model : 'gpt4';
     const userMessage = chatQuery;
-    setChatQuery("");
+    setChatQuery('');
     setChatLoading(true);
     try {
-      const response = await chatWithQAAI(userMessage, "", model_name, session_id);
+      const response = await chatWithQAAI(userMessage, '', model_name, session_id);
       const parsedResponse = await Markdown(response.data.ai_final_response);
       setChatResponse(parsedResponse);
     } catch (error: any) {
-      setChatError(error.response?.data?.message || "Failed to fetch chat response.");
+      setChatError(error.response?.data?.message || 'Failed to fetch chat response.');
     } finally {
       setChatLoading(false);
     }
   };
 
+  // Action Chat (write/mutation)
   const onActionSent = async (model?: string, session?: string): Promise<void> => {
     if (chatLoading) return;
-    const model_name = model ? model : "gpt4";
-    const session_id = session ? session : "session";
+    const model_name = model ? model : 'management_gpt4';
+    const session_id = session ? session : 'session';
     const userMessage = chatQuery;
-    setChatQuery("");
+    setChatQuery('');
     setChatLoading(true);
     try {
-      const response = await chatWithActionAI(userMessage, "", model_name, session_id);
+      const response = await chatWithActionAI(userMessage, '', model_name, session_id);
       const parsedResponse = await Markdown(response.data.ai_final_response);
       setChatResponse(parsedResponse);
     } catch (error: any) {
-      setChatError(error.response?.data?.message || "Failed to fetch chat response.");
+      setChatError(error.response?.data?.message || 'Failed to fetch chat response.');
     } finally {
       setChatLoading(false);
     }
   };
 
-  // Filter users based on search term
+  // Filter users by search term
   const filteredUsers = userData.filter((user) =>
     user.userName.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  // Filter events for AccessDenied errors
+  // Filter events for AccessDenied
   const filterAccessDeniedEvents = (events: any[]) => {
     if (!events) return [];
     return events.filter((event) => event.errorCode === 'AccessDenied' && event.errorMessage !== '');
@@ -305,7 +328,17 @@ const AzureUserManagement: React.FC = () => {
           <Typography color="error">{errorDetails}</Typography>
         ) : selectedUser && userDetails ? (
           <Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1e1e1e', padding: 2, borderRadius: 2, boxShadow: 3 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                backgroundColor: '#1e1e1e',
+                padding: 2,
+                borderRadius: 2,
+                boxShadow: 3,
+              }}
+            >
               <Box sx={{ display: 'flex', alignItems: 'center' }}>
                 <Avatar sx={{ marginRight: 2 }}>
                   <PersonIcon />
@@ -344,13 +377,27 @@ const AzureUserManagement: React.FC = () => {
             {tabIndex === 0 && renderTable(userDetails.groups, ['groupName'])}
             {tabIndex === 1 && (
               <Box>
-                {renderTable(filterOtherEvents(userDetails.events), ['eventSource', 'eventName', 'eventTime', 'region', 'sourceIPAddress'])}
+                {renderTable(
+                  filterOtherEvents(userDetails.events),
+                  ['eventSource', 'eventName', 'eventTime', 'region', 'sourceIPAddress']
+                )}
               </Box>
             )}
-            {tabIndex === 2 && renderTable(userDetails.accessData, ['serviceName', 'lastAuthenticatedRegion', 'lastAuthenticated'])}
+            {tabIndex === 2 &&
+              renderTable(userDetails.accessData, [
+                'serviceName',
+                'lastAuthenticatedRegion',
+                'lastAuthenticated',
+              ])}
             {tabIndex === 3 && (
               <Box>
-                {renderTable(filterAccessDeniedEvents(userDetails.events), ['eventSource', 'errorMessage', 'eventTime', 'region', 'sourceIPAddress'])}
+                {renderTable(filterAccessDeniedEvents(userDetails.events), [
+                  'eventSource',
+                  'errorMessage',
+                  'eventTime',
+                  'region',
+                  'sourceIPAddress',
+                ])}
               </Box>
             )}
           </Box>
