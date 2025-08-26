@@ -3,6 +3,7 @@ package com.example.azuremanagement.service;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.*;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -26,16 +27,7 @@ import com.azure.storage.blob.specialized.AppendBlobClient;
 import com.example.azuremanagement.model.CustomRole;
 import com.example.azuremanagement.model.Department;
 import com.google.gson.JsonObject;
-import com.microsoft.graph.models.AppRole;
-import com.microsoft.graph.models.AppRoleAssignment;
-import com.microsoft.graph.models.Application;
-import com.microsoft.graph.models.DirectoryObject;
-import com.microsoft.graph.models.Group;
-import com.microsoft.graph.models.ServicePrincipal;
-import com.microsoft.graph.models.UnifiedRoleAssignment;
-import com.microsoft.graph.models.UnifiedRoleDefinition;
-import com.microsoft.graph.models.UnifiedRolePermission;
-import com.microsoft.graph.models.User;
+import com.microsoft.graph.models.*;
 import com.microsoft.graph.requests.GraphServiceClient;
 import okhttp3.Request;
 import org.slf4j.Logger;
@@ -55,6 +47,9 @@ public class AzureGraphService {
     @Autowired
     @Lazy
     private Neo4jService neo4jService;
+
+    @Autowired
+    private ActivityLogService activityLogService;
 
     // Constants – replace with your actual values.
     private static final String RESOURCE_ID = "4ec70fbd-d886-4107-8955-fcd889030f00";
@@ -450,6 +445,106 @@ public class AzureGraphService {
             logger.error("Error retrieving custom role: {}", e.getMessage(), e);
             throw new RuntimeException(e);
         }
+    }
+
+    public Map<String, List<String>> getAllUserRoleAssignments() {
+        Map<String, List<String>> userRoles = new HashMap<>();
+
+        // 1) App Role assignments
+        for (User u : getAllUsers()) {
+            var page = graphClient.users(u.id).appRoleAssignments().buildRequest().get();
+            while (page != null) {
+                for (AppRoleAssignment asg : page.getCurrentPage()) {
+                    userRoles
+                            .computeIfAbsent(u.id, k -> new ArrayList<>())
+                            .add(asg.appRoleId.toString());
+                }
+                page = page.getNextPage() != null
+                        ? page.getNextPage().buildRequest().get()
+                        : null;
+            }
+        }
+
+        var dirPage = graphClient
+                .roleManagement()
+                .directory()
+                .roleAssignments()
+                .buildRequest()
+                .get();
+        while (dirPage != null) {
+            for (UnifiedRoleAssignment dra : dirPage.getCurrentPage()) {
+                String principal = dra.principalId;
+                // only put into users
+                if (userRoles.containsKey(principal) || getAllUsers()
+                        .stream()
+                        .anyMatch(u -> u.id.equals(principal))) {
+                    userRoles
+                            .computeIfAbsent(principal, k -> new ArrayList<>())
+                            .add(dra.roleDefinitionId);
+                }
+            }
+            dirPage = dirPage.getNextPage() != null
+                    ? dirPage.getNextPage().buildRequest().get()
+                    : null;
+        }
+
+        return userRoles;
+    }
+
+    /**
+     * Returns a map groupId → list of all AppRole & DirectoryRole IDs assigned to that group.
+     */
+    public Map<String, List<String>> getAllGroupRoleAssignments() {
+        Map<String, List<String>> groupRoles = new HashMap<>();
+
+        // 1) App Role assignments
+        for (Group g : getAllGroups()) {
+            var page = graphClient.groups(g.id).appRoleAssignments().buildRequest().get();
+            while (page != null) {
+                for (AppRoleAssignment asg : page.getCurrentPage()) {
+                    groupRoles
+                            .computeIfAbsent(g.id, k -> new ArrayList<>())
+                            .add(asg.appRoleId.toString());
+                }
+                page = page.getNextPage() != null
+                        ? page.getNextPage().buildRequest().get()
+                        : null;
+            }
+        }
+
+        // 2) Directory Role assignments
+        var dirPage = graphClient
+                .roleManagement()
+                .directory()
+                .roleAssignments()
+                .buildRequest()
+                .get();
+        while (dirPage != null) {
+            for (UnifiedRoleAssignment dra : dirPage.getCurrentPage()) {
+                String principal = dra.principalId;
+                // only put into groups
+                if (groupRoles.containsKey(principal) || getAllGroups()
+                        .stream()
+                        .anyMatch(g -> g.id.equals(principal))) {
+                    groupRoles
+                            .computeIfAbsent(principal, k -> new ArrayList<>())
+                            .add(dra.roleDefinitionId);
+                }
+            }
+            dirPage = dirPage.getNextPage() != null
+                    ? dirPage.getNextPage().buildRequest().get()
+                    : null;
+        }
+
+        return groupRoles;
+    }
+
+    /**
+     * Returns a map groupId → list of userIds in that group.
+     * (You already have the fetchGroupMembershipsFromAzure() helper; just expose it.)
+     */
+    public Map<String, List<String>> getAllGroupMemberships() {
+        return fetchGroupMembershipsFromAzure();
     }
 
     public List<CustomRole> getAllCustomRoles() {
@@ -961,6 +1056,112 @@ public class AzureGraphService {
         logAccess(userId, "EmergencyRole", "Activated emergency role with permissions " + permissions + " for " + durationMinutes + " minutes");
     }
 
+    public List<DirectoryRole> getAllDirectoryRoles() {
+        List<DirectoryRole> roles = new ArrayList<>();
+
+        graphClient.directoryRoles()
+                .buildRequest()
+                .get()
+                .getCurrentPage()
+                .forEach(roles::add);
+
+        return roles;
+    }
+
+    public List<ServicePrincipal> getAllServicePrincipals() {
+        List<ServicePrincipal> servicePrincipals = new ArrayList<>();
+
+        graphClient.servicePrincipals()
+                .buildRequest()
+                .top(999) // batch size
+                .get()
+                .getCurrentPage()
+                .forEach(servicePrincipals::add);
+
+        return servicePrincipals;
+    }
+
+    public Map<String, List<String>> getAllServicePrincipalRoleAssignments() {
+        Map<String, List<String>> assignments = new HashMap<>();
+
+        List<ServicePrincipal> sps = getAllServicePrincipals();
+
+        for (ServicePrincipal sp : sps) {
+            List<String> roleIds = new ArrayList<>();
+
+            try {
+                List<AppRoleAssignment> appRoleAssignments = graphClient
+                        .servicePrincipals(sp.id)
+                        .appRoleAssignments()
+                        .buildRequest()
+                        .get()
+                        .getCurrentPage();
+
+                for (AppRoleAssignment assignment : appRoleAssignments) {
+                    if (assignment.appRoleId != null) {
+                        roleIds.add(String.valueOf(assignment.appRoleId));
+
+                        // Create relationship: (:ServicePrincipal)-[:USES_ROLE]->(:Role)
+                        neo4jService.createRelationshipBetweenServicePrincipalAndRole(
+                                sp.id, String.valueOf(assignment.appRoleId)
+                        );
+                    }
+
+                    if (assignment.resourceId != null) {
+                        // Create relationship: (:ServicePrincipal)-[:TARGETS]->(:Resource)
+                        neo4jService.createRelationshipBetweenServicePrincipalAndResource(
+                                sp.id, String.valueOf(assignment.resourceId)
+                        );
+                    }
+                }
+
+                assignments.put(sp.id, roleIds);
+            } catch (Exception e) {
+                logger.error("Error fetching AppRoleAssignments for ServicePrincipal {}: {}", sp.id, e.getMessage(), e);
+            }
+        }
+
+        return assignments;
+    }
+
+
+    public Map<String, Boolean> getAllMfaStates(List<User> users) {
+        Map<String, Boolean> mfaStates = new HashMap<>();
+
+        for (User user : users) {
+            try {
+                List<AuthenticationMethod> methods = graphClient
+                        .users(user.id)
+                        .authentication()
+                        .methods()
+                        .buildRequest()
+                        .get()
+                        .getCurrentPage();
+
+                boolean hasMfa = methods.stream().anyMatch(method -> {
+                    Object odataTypeObj = method.additionalDataManager().get("@odata.type");
+                    if (odataTypeObj instanceof String) {
+                        String odataType = (String) odataTypeObj;
+                        return odataType.contains("microsoftAuthenticator") ||
+                                odataType.contains("fido2") ||
+                                odataType.contains("softwareOath");
+                    }
+                    return false;
+                });
+
+                mfaStates.put(user.id, hasMfa);
+            } catch (Exception e) {
+                logger.error("Error fetching MFA status for user {}: {}", user.id, e.getMessage(), e);
+                mfaStates.put(user.id, false);
+            }
+        }
+
+        return mfaStates;
+    }
+
+
+
+
     public void grantCrossDepartmentAccess(String sourceUserId, String targetUserId, String allowedDataSegment, int durationMinutes, boolean useDirectoryRole) {
         logger.info("Granting cross-department access from {} to {} for data segment {} for {} minutes (Directory Role: {})", sourceUserId, targetUserId, allowedDataSegment, durationMinutes, useDirectoryRole);
         if (useDirectoryRole) {
@@ -995,14 +1196,24 @@ public class AzureGraphService {
     }
 
     public void pushDataToNeo4j() {
+        // Step 1: Core entities
         List<User> users = getAllUsers();
         List<Group> groups = getAllGroups();
+        List<CustomRole> customRoles = getAllCustomRoles();
+        Map<String, CustomRole> roleMap = customRoles.stream()
+                .collect(Collectors.toMap(CustomRole::getId, r -> r));
+
         Map<String, List<String>> memberships = fetchGroupMembershipsFromAzure();
 
+        // Step 2: User role assignments (AppRoleAssignments)
         Map<String, List<String>> userRolesLive = new HashMap<>();
         for (User user : users) {
             try {
-                List<AppRoleAssignment> assignments = graphClient.users(user.id).appRoleAssignments().buildRequest().get().getCurrentPage();
+                List<AppRoleAssignment> assignments = graphClient.users(user.id)
+                        .appRoleAssignments()
+                        .buildRequest()
+                        .get()
+                        .getCurrentPage();
                 for (AppRoleAssignment assignment : assignments) {
                     userRolesLive.computeIfAbsent(user.id, k -> new ArrayList<>()).add(assignment.appRoleId.toString());
                 }
@@ -1011,33 +1222,35 @@ public class AzureGraphService {
             }
         }
 
+        // Step 3: Group role assignments (AppRoleAssignments)
         Map<String, List<String>> groupRolesLive = new HashMap<>();
         for (Group group : groups) {
             try {
-                List<AppRoleAssignment> assignments = graphClient.groups(group.id).appRoleAssignments().buildRequest().get().getCurrentPage();
+                List<AppRoleAssignment> assignments = graphClient.groups(group.id)
+                        .appRoleAssignments()
+                        .buildRequest()
+                        .get()
+                        .getCurrentPage();
                 for (AppRoleAssignment assignment : assignments) {
                     groupRolesLive.computeIfAbsent(group.id, k -> new ArrayList<>()).add(assignment.appRoleId.toString());
+
                 }
             } catch (Exception e) {
                 logger.error("Error retrieving app role assignments for group {}: {}", group.id, e.getMessage(), e);
             }
         }
 
+        // Step 4: Directory role assignments
         try {
             List<UnifiedRoleAssignment> directoryAssignments = listDirectoryAssignments();
-            Map<String, Boolean> userIdSet = new HashMap<>();
-            for (User user : users) {
-                userIdSet.put(user.id, true);
-            }
-            Map<String, Boolean> groupIdSet = new HashMap<>();
-            for (Group group : groups) {
-                groupIdSet.put(group.id, true);
-            }
+            Set<String> userIds = users.stream().map(u -> u.id).collect(Collectors.toSet());
+            Set<String> groupIds = groups.stream().map(g -> g.id).collect(Collectors.toSet());
+
             for (UnifiedRoleAssignment assignment : directoryAssignments) {
                 String principalId = assignment.principalId;
-                if (userIdSet.containsKey(principalId)) {
+                if (userIds.contains(principalId)) {
                     userRolesLive.computeIfAbsent(principalId, k -> new ArrayList<>()).add(assignment.roleDefinitionId);
-                } else if (groupIdSet.containsKey(principalId)) {
+                } else if (groupIds.contains(principalId)) {
                     groupRolesLive.computeIfAbsent(principalId, k -> new ArrayList<>()).add(assignment.roleDefinitionId);
                 }
             }
@@ -1045,9 +1258,33 @@ public class AzureGraphService {
             logger.error("Error retrieving directory role assignments: {}", e.getMessage(), e);
         }
 
-        neo4jService.pushData(users, groups, customRoles, userRolesLive, groupRolesLive, memberships);
-        logger.info("Data synchronized successfully to Neo4j.");
+        // Step 5: Directory roles
+        List<DirectoryRole> directoryRoles = getAllDirectoryRoles();
+
+        // Step 6: Service Principals and their role assignments
+        List<ServicePrincipal> servicePrincipals = getAllServicePrincipals();
+        Map<String, List<String>> servicePrincipalRoleAssignments = getAllServicePrincipalRoleAssignments();
+
+        // Step 7: MFA Status map
+        Map<String, Boolean> mfaStates = getAllMfaStates(users);
+
+        // Step 8: Push everything to Neo4j
+        neo4jService.pushData(
+                users,
+                groups,
+                roleMap,
+                userRolesLive,
+                groupRolesLive,
+                memberships,
+                directoryRoles,
+                servicePrincipals,
+                servicePrincipalRoleAssignments,
+                mfaStates
+        );
+
+        logger.info("Full directory data pushed to Neo4j.");
     }
+
 
     public Map<String, List<String>> getFlaggedUsers() {
         return new HashMap<>(flaggedUsers);
