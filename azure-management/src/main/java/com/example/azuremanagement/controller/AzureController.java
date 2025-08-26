@@ -3,6 +3,9 @@ package com.example.azuremanagement.controller;
 import com.example.azuremanagement.model.CustomRole;
 import com.example.azuremanagement.model.Department;
 import com.example.azuremanagement.service.AzureGraphService;
+import com.example.azuremanagement.service.DirectorySyncService;
+import com.example.azuremanagement.service.Neo4jService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
 import org.slf4j.Logger;
@@ -29,6 +32,12 @@ public class AzureController {
     public AzureController(AzureGraphService azureGraphService) {
         this.azureGraphService = azureGraphService;
     }
+
+    @Autowired
+    private DirectorySyncService directorySyncService;
+
+    @Autowired
+    private Neo4jService neo4jService;
 
     // ------------------ Basic User Endpoints ------------------
 
@@ -255,6 +264,20 @@ public class AzureController {
         }
     }
 
+    @PostMapping("/sync")
+    public Map<String, Object> syncDirectory() {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            directorySyncService.syncDirectoryToNeo4j();
+            response.put("status", "success");
+            response.put("message", "Directory sync completed.");
+        } catch (Exception e) {
+            response.put("status", "error");
+            response.put("message", "Sync failed: " + e.getMessage());
+        }
+        return response;
+    }
+
     // ------------------ MFA Endpoint ------------------
 
     @PostMapping("/mfa/verify")
@@ -457,4 +480,23 @@ public class AzureController {
                 .collect(Collectors.toList());
         return ResponseEntity.ok(depts);
     }
+
+    @GetMapping("/summary")
+    public Map<String, Object> getSummary() {
+        Map<String, Object> summary = new HashMap<>();
+
+
+        summary.put("users", azureGraphService.getAllUsers().size());
+        summary.put("groups", azureGraphService.getAllGroups().size());
+        summary.put("customRoles", azureGraphService.getAllCustomRoles().size());
+        summary.put("directoryRoles", azureGraphService.getAllDirectoryRoles().size());
+        summary.put("servicePrincipals", azureGraphService.getAllServicePrincipals().size());
+
+        return summary;
+    }
+
+
+
+
+
 }
